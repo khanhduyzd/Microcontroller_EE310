@@ -1,18 +1,18 @@
-//-------------------------------
-// Title: TempController
-//-------------------------------
-// Purpose: Measure the temperature
-//          and adjust the heating/cooling system
-//          base on a reference temperature
-// Dependencies: <xc.inc>
-// Compiler: MPLAB v6.30
-// Author: DUY PHAM
-// OUTPUTS: LED1 (cooling system) connected to PORTD1,
-//          LED2 (heating system) connected to PORTD2
-// INPUTS: measureTemp from sensor and refTemp from keypad
-// Versions:
-//   V1.0: 03/06/2026 - First version
-//-------------------------------
+;-------------------------------
+; Title: TempController
+;-------------------------------
+; Purpose: Measure the temperature
+;          and adjust the heating/cooling system
+;          base on a reference temperature
+; Dependencies: <xc.inc>
+; Compiler: MPLAB v6.30
+; Author: DUY PHAM
+; OUTPUTS: LED1 (cooling system) connected to PORTD1,
+;          LED2 (heating system) connected to PORTD2
+; INPUTS: measureTemp from sensor and refTemp from keypad
+; Versions:
+;   V1.0: 03/06/2026 - First version
+;-------------------------------
     
 processor 18F47K42
 #include <xc.inc>
@@ -31,8 +31,8 @@ processor 18F47K42
 ; Definitions
 ;---------------------
 #define SWITCH    LATD,2  
-#define LED0      PORTD,0
-#define LED1	   PORTD,1
+#define LED0      LATD,0
+#define LED1	  LATD,1
     
  
 ;---------------------
@@ -49,9 +49,9 @@ REG01   equ     1h
 ;----------------------------
 ; Program registers
 ;----------------------------
-contReg      equ 20h
-refTempReg   equ 21h
-measTempReg  equ 22h
+refTempReg   equ 20h
+measTempReg  equ 21h
+contReg      equ 22h
 count        equ 30h
 number       equ 31h
 
@@ -75,64 +75,64 @@ MEA_HUND     equ 72h
 main:
     ; PORTD output setup
     banksel TRISD
-    clrf    TRISD
-    banksel PORTD
-    clrf    PORTD
+    clrf TRISD
+    banksel LATD
+    clrf LATD
 
     ;arbitrary values required by assignment
-    movlw   0x05
-    movwf   refTempReg
-    movlw   0x06
-    movwf   measTempReg
+    movlw 0x05
+    movwf refTempReg
+    movlw 0x06
+    movwf measTempReg
 
 
 ; Compare measured vs ref
 ; (Image-style: use BZ / BC)
 
-    movf    refTempReg, W
-    subwf   measTempReg, W     ; W = meas - ref
+    movf refTempReg, W
+    subwf measTempReg, W     ; W = meas - ref
 
-    bz      SET_EQUAL          ; if meas == ref
-    bc      SET_HOT            ; if meas > ref (since not equal, and carry=1 => meas>=ref)
-    goto    SET_COOL           ; else meas < ref
+    bz SET_EQUAL          ; if meas == ref
+    bc SET_COOL            ; if meas > ref (since not equal, and carry=1 => meas>=ref)
+    goto SET_HOT           ; else meas < ref
 
 SET_EQUAL:
-    clrf    contReg
-    goto    LED_OFF
+    clrf contReg
+    goto LED_OFF
 
 SET_HOT:
-    movlw   0x02
-    movwf   contReg
-    goto    LED_HOT
+    movlw 0x02
+    movwf contReg
+    goto LED_HOT
 
 SET_COOL:
-    movlw   0x01
-    movwf   contReg
-    goto    LED_COOL
+    movlw 0x01
+    movwf contReg
+    goto LED_COOL
 
 
 ; Step 3: LED actions (PORTD)
 
 LED_HOT:
     ; Turn ON hotAir (LED1), OFF coolAir (LED0)
-    banksel PORTD
-    bcf     PORTD,0
-    bsf     PORTD,1
-    goto    HEX_TO_BCD
+    banksel LATD
+    bcf LATD,0
+    bsf LATD,1
+    goto HEX_TO_BCD
 
 LED_COOL:
     ; Turn ON coolAir (LED0), OFF hotAir (LED1)
-    banksel PORTD
-    bsf     PORTD,0
-    bcf     PORTD,1
-    goto    HEX_TO_BCD
+    banksel LATD
+    bsf LATD,0
+    bcf LATD,1
+    goto HEX_TO_BCD
 
 LED_OFF:
     ; Turn OFF all
-    banksel PORTD
-    bcf     PORTD,0
-    bcf     PORTD,1
-    goto    HEX_TO_BCD
+    banksel LATD
+    bcf LATD,0
+    bcf LATD,1
+    goto HEX_TO_BCD
 
 
 ; HEX -> DEC (BCD digits) using subtraction method (matches image)
@@ -143,57 +143,55 @@ LED_OFF:
 HEX_TO_BCD:
 
 ;REF TEMP: refTempInput -> 0x60..0x62 
-    clrf    count
-    movlw   refTempInput
-    movwf   number
-    movlw   100
+    clrf count
+    movlw refTempInput
+    movwf number
+    movlw 100
 
 Loop100sRef:
-    incf    count, F
-    subwf   number, F
-    bc      Loop100sRef
-    decf    count, F
-    addwf   number, F
-    movff   count, REF_HUND
+    incf count, F
+    subwf number, F      ; F=F-W
+    bc Loop100sRef    ; keep on subtracting while carry=1 (no borrow)
+    decf count, F
+    addwf number, F	    ;add 100 back once 
+    movff count, REF_HUND ; assign to 0x062
 
-    clrf    count
-    movlw   10
+    clrf count
+    movlw 10         ; set up for the ten place
 
 Loop10sRef:
-    incf    count, F
-    subwf   number, F
-    bc      Loop10sRef
-    decf    count, F
-    addwf   number, F
-    movff   count, REF_TENS
-    movff   number, REF_ONES
+    incf count, F
+    subwf number, F
+    bc Loop10sRef
+    decf count, F
+    addwf number, F	     ; add 10 back once
+    movff count, REF_TENS  ; 0x61
+    movff number, REF_ONES ; 0x60
 
 ; MEASURED TEMP: measuredTempInput -> 0x70..0x72 
-    clrf    count
-    movlw   measuredTempInput
-    movwf   number
-    movlw   100
+    clrf count
+    movlw measuredTempInput
+    movwf number
+    movlw 100
 
 Loop100sMeas:
-    incf    count, F
-    subwf   number, F
-    bc      Loop100sMeas
-    decf    count, F
-    addwf   number, F
-    movff   count, MEA_HUND
+    incf count, F
+    subwf number, F	    ;F=F-W
+    bc Loop100sMeas    ; keep subtracting until  carry=0 (borrow)
+    decf count, F
+    addwf number, F
+    movff count, MEA_HUND  ; 0x72
 
-    clrf    count
-    movlw   10
+    clrf count
+    movlw 10		; set up for tens places
 
 Loop10sMeas:
-    incf    count, F
-    subwf   number, F
-    bc      Loop10sMeas
-    decf    count, F
-    addwf   number, F
-    movff   count, MEA_TENS
-    movff   number, MEA_ONES
-
-  sleep
-  end
-    
+    incf count, F
+    subwf number, F
+    bc Loop10sMeas
+    decf count, F
+    addwf number, F
+    movff count, MEA_TENS  ;0x71
+    movff number, MEA_ONES ;0x70 
+ 
+ sleep
