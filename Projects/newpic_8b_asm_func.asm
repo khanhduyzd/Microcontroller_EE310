@@ -7,14 +7,13 @@
 ; Dependencies: <xc.inc>
 ; Compiler: MPLAB v6.30
 ; Author: DUY PHAM
-; OUTPUTS: LED1 (cooling system) connected to PORTD1,
-;          LED2 (heating system) connected to PORTD2
+; OUTPUTS: LED1 (heating system) connected to PORTD1,
+;          LED2 (cooling system) connected to PORTD2
 ; INPUTS: measureTemp from sensor and refTemp from keypad
 ; Versions:
 ;   V1.0: 03/06/2026 - First version
 ;-------------------------------
-    
-processor 18F47K42
+#include "./AssemblyConfig.inc"
 #include <xc.inc>
     
 ;----------------
@@ -24,8 +23,8 @@ processor 18F47K42
 ;It is more flexible and can be used to define complex expressions or sequences of instructions.
 ;It is processed by the preprocessor before the assembly begins.
 
-#define  measuredTempInput 	45 ; this is the input value
-#define  refTempInput 		25 ; this is the input value
+#define  measuredTempInput 5		 ; this is the input value
+#define  refTempInput 15 		 ; this is the input value
 
 ;---------------------
 ; Definitions
@@ -62,34 +61,35 @@ REF_HUND     equ 62h
 MEA_ONES     equ 70h
 MEA_TENS     equ 71h
 MEA_HUND     equ 72h
+     
 
-
-; Reset Vector
-
-    org 0x20
-    goto main
-
-;Main Program
+    PSECT absdata,abs,ovrld        
     
+    ORG          0                ;Reset vector
+    GOTO        main
+
+    ORG          0020H           ; Begin assembly at 0020H
+ 
 main:
     ; PORTD output setup
+    banksel ANSELD
+    clrf ANSELD          ; make all Port D pins digital
     banksel TRISD
     clrf TRISD
     banksel LATD
     clrf LATD
 
-    ;arbitrary values required by assignment
-    movlw 0x05
-    movwf refTemp
-    movlw 0x06
-    movwf measuredTemp
-
 
 ; Compare measured vs ref
 ; (Image-style: use BZ / BC)
 
+    movlw refTempInput
+    movwf refTemp
+    movlw measuredTempInput
+    movwf measuredTemp
+
     movf refTemp, W
-    subwf measuredTemp, W     ; W = measured - ref
+    subwf measuredTemp, W
     
     bz SET_EQUAL          ; if measured == ref
     bc SET_COOL            ; if measured > ref (since not equal, and carry=1 => meas>=ref)
@@ -134,7 +134,7 @@ LED_OFF:
     goto HEX_TO_BCD
 
 
-; HEX -> DEC (BCD digits) using subtraction method (matches image)
+; HEX -> DEC (BCD digits) using subtraction method 
 ; Store:
 ;   ref  -> REG60-62
 ;   meas -> REG70-72
