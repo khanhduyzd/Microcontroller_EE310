@@ -46,11 +46,11 @@ REG10   equ     10h   ; in HEX
 REG11   equ     11h
 REG01   equ     1h
 
-;----------------------------
+
 ; Program registers
-;----------------------------
-refTempReg   equ 20h
-measTempReg  equ 21h
+
+refTemp      equ 20h
+measuredTemp equ 21h
 contReg      equ 22h
 count        equ 30h
 number       equ 31h
@@ -63,15 +63,14 @@ MEA_ONES     equ 70h
 MEA_TENS     equ 71h
 MEA_HUND     equ 72h
 
-;----------------------------
+
 ; Reset Vector
-;----------------------------
-    org 0x000
+
+    org 0x20
     goto main
 
-;----------------------------
-; Main
-;----------------------------
+;Main Program
+    
 main:
     ; PORTD output setup
     banksel TRISD
@@ -81,32 +80,32 @@ main:
 
     ;arbitrary values required by assignment
     movlw 0x05
-    movwf refTempReg
+    movwf refTemp
     movlw 0x06
-    movwf measTempReg
+    movwf measuredTemp
 
 
 ; Compare measured vs ref
 ; (Image-style: use BZ / BC)
 
-    movf refTempReg, W
-    subwf measTempReg, W     ; W = meas - ref
-
-    bz SET_EQUAL          ; if meas == ref
-    bc SET_COOL            ; if meas > ref (since not equal, and carry=1 => meas>=ref)
-    goto SET_HOT           ; else meas < ref
+    movf refTemp, W
+    subwf measuredTemp, W     ; W = measured - ref
+    
+    bz SET_EQUAL          ; if measured == ref
+    bc SET_COOL            ; if measured > ref (since not equal, and carry=1 => meas>=ref)
+    goto SET_HOT           ; else measured < ref
 
 SET_EQUAL:
     clrf contReg
     goto LED_OFF
 
 SET_HOT:
-    movlw 0x02
+    movlw 0x01
     movwf contReg
     goto LED_HOT
 
 SET_COOL:
-    movlw 0x01
+    movlw 0x02
     movwf contReg
     goto LED_COOL
 
@@ -194,4 +193,6 @@ Loop10sMeas:
     movff count, MEA_TENS  ;0x71
     movff number, MEA_ONES ;0x70 
  
- sleep
+ goto $
+ 
+    
