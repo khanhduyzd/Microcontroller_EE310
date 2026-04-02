@@ -1,1 +1,370 @@
+; FileName: Counter Design
+; Author: Duy Pham
+; Course: EE310
+; Date: 03/22/26
 
+; MPLAB Version: MPLAB X IDE v6.30
+; Operating System: Windows 11
+; Program Version: V1 - original version
+
+; Purpose:
+;   Implement a counter system using a 7-segment display that increments,
+;   decrements, or resets the count based on user input from push buttons.
+
+; Inputs:
+;   RB0 - Increase / Controls Input A
+;   RB1 - Decrease / Controls Input B
+; Outputs:
+;   RD0-RD7 - Output 7segment display
+
+; Description:
+;   The program reads two input switches (RB0 and RB1) to control
+;   a counter displayed on a 7-segment display. If RB0 is pressed,
+;   the count increments. If RB1 is pressed, the count decrements.
+;   If both switches are pressed simultaneously, the count resets
+;   to zero. The counter cycles within the range 0-9 and updates
+;   the display accordingly.
+
+; Instructions:
+;   Press the buttons A, B
+    
+    
+    
+;------------------------------------------------------------------------------
+; INITIALIZATION
+
+#include <xc.inc>
+#include "AssemblyConfig.inc"
+
+;------------------------------------------------------------------------------
+; DEFENITIONS
+
+; if OPERATION = 1 -> COUNTUP
+; if OPERATION = 2 -> COUNTDOWN
+; if OPERATION = 3 -> RESET
+; if OPERATION = 0 -> NOTHING
+    
+;------------------------------------------------------------------------------
+; VARIABLES
+
+COUNT       equ 0x10
+OPERATION   equ 0x11
+
+; Delay registers
+REG10       equ 0x12
+REG11       equ 0x13
+REG12       equ 0x14
+
+Inner_loop  equ 10
+Middle_loop equ 5
+Outer_loop  equ 5
+    
+;------------------------------------------------------------------------------   
+; PROGRAM ORGINIZATION
+
+PSECT absdata,abs,ovrld        ; important code
+ORG          0                ;Reset vector
+GOTO	     START
+ORG          0020H           ; Begin assembly at 0020H
+;------------------------------------------------------------------------------
+; SET UP & MAIN PROGRAM
+
+START:
+    CALL INITIALIZATION	;Initialize MCU / pins / variables
+    CALL DISPLAY_COUNT	;Display initial count (0)
+
+MAIN_LOOP:
+    CALL CHECK_SWITCH	;Read switches & store in OPERATION
+    CALL DELAY		;Delay 
+    
+    BANKSEL OPERATION
+    MOVF OPERATION, W	;Move OPERATION into W for comparison
+
+    ; A and B pressed
+    XORLW 0x03		; Compare W OPERATION with 3 -> RESET 
+    BTFSC STATUS, 2	;Test Status bit2, if W&3 equal(Z=1), Skip if clear z=0
+    CALL RESET_COUNT	; Reset
+    
+    BANKSEL OPERATION
+    ;A pressed
+    MOVF OPERATION, W	
+    XORLW 0x01		;Compare W OPERATION with 1 -> COUNTUP
+    BTFSC STATUS, 2	;Test Status bit2, if W&1 equal Z=1, Skip if clear z=0
+    CALL COUNT_UP	;Increment
+    
+    BANKSEL OPERATION
+    ; B pressed
+    MOVF OPERATION, W
+    XORLW 0x02		;Compare W OPERATION with 2 -> COUNTDOWN
+    BTFSC STATUS, 2	;Test Status bit2, if W&2 equal Z=1, Skip if clear z=0
+    CALL COUNT_DOWN	; Decrement     
+    
+    BANKSEL OPERATION
+   ; None pressed
+    MOVF OPERATION, W	;Compare W OPERATION with 0 -> NOTHING
+    XORLW 0x00		;Test Status bit2, if W&2 equalZ=1, Skip if clear z=0
+    BTFSC STATUS, 2	
+    CALL DO_NOTHING
+
+    GOTO MAIN_LOOP	;Indefinite Loop
+    
+;------------------------------------------------------------------------------
+; CALL FUNCTIONS
+
+INITIALIZATION:
+    ; Setup & Clear PORTD
+    BANKSEL	PORTD ;
+    CLRF	PORTD ;Init PORTD
+    BANKSEL	LATD ;Data Latch
+    CLRF	LATD ;
+    BANKSEL	ANSELD ;
+    CLRF	ANSELD ;digital I/O
+    BANKSEL	TRISD ;
+    MOVLW	0b00000000 ;Set RD[7:1] as outputs
+    MOVWF	TRISD ;and set RD0 as ouput
+
+    ; Setup PORTB inputs
+    BANKSEL	PORTB ;
+    CLRF	PORTB ;Init PORTB
+    BANKSEL	LATB ;Data Latch
+    CLRF	LATB ;
+    BANKSEL	ANSELB ;
+    CLRF	ANSELB ;digital I/O
+    BANKSEL	TRISB ;
+    MOVLW	0b00000011 ;Set RB0-1 as inputs & RB3-7 as outputs
+    MOVWF	TRISB ;
+
+    ; Initialize count
+    BANKSEL COUNT
+    CLRF COUNT
+    CLRF OPERATION
+
+    RETURN
+    
+CHECK_SWITCH:
+    BANKSEL OPERATION
+    CLRF OPERATION
+
+    ; both pressed?
+    BANKSEL PORTB	 ; Check RB0
+    BTFSS PORTB, 0
+    GOTO CHECK_A
+    BTFSS PORTB, 1	; Check RB1
+    GOTO CHECK_A
+    GOTO BOTH_PRESSED
+
+CHECK_A:
+    ; A PRessed
+    BANKSEL PORTB
+    BTFSS PORTB, 0
+    GOTO CHECK_B
+    GOTO A_PRESSED
+    
+
+CHECK_B:
+    ; B Pressed
+    BANKSEL PORTB
+    BTFSS PORTB, 1
+    GOTO NO_PRESS
+    GOTO B_PRESSED
+
+BOTH_PRESSED:; OPERATION = 3 (RESET)
+    MOVLW 0x03	    
+    BANKSEL OPERATION
+    MOVWF OPERATION
+    RETURN
+
+A_PRESSED: ; OPERATION = 1 (COUNT UP)
+    MOVLW 0x01
+    BANKSEL OPERATION
+    MOVWF OPERATION
+    RETURN
+
+B_PRESSED: ; OPERATION = 2 (COUNT DOWN)
+    MOVLW 0x02
+    BANKSEL OPERATION
+    MOVWF OPERATION
+    RETURN
+
+NO_PRESS:; OPERATION = 0 (DO NOTHING)
+    BANKSEL OPERATION
+    CLRF OPERATION
+    RETURN
+
+DISPLAY_COUNT:
+    BANKSEL COUNT
+    MOVF COUNT, W	; Load current count value
+
+    XORLW 0x00
+    BTFSC STATUS, 2
+    GOTO DISP_0
+
+    MOVF COUNT, W
+    XORLW 0x01
+    BTFSC STATUS, 2
+    GOTO DISP_1
+
+    MOVF COUNT, W
+    XORLW 0x02
+    BTFSC STATUS, 2
+    GOTO DISP_2
+
+    MOVF COUNT, W
+    XORLW 0x03
+    BTFSC STATUS, 2
+    GOTO DISP_3
+
+    MOVF COUNT, W
+    XORLW 0x04
+    BTFSC STATUS, 2
+    GOTO DISP_4
+
+    MOVF COUNT, W
+    XORLW 0x05
+    BTFSC STATUS, 2
+    GOTO DISP_5
+
+    MOVF COUNT, W
+    XORLW 0x06
+    BTFSC STATUS, 2
+    GOTO DISP_6
+
+    MOVF COUNT, W
+    XORLW 0x07
+    BTFSC STATUS, 2
+    GOTO DISP_7
+
+    MOVF COUNT, W
+    XORLW 0x08
+    BTFSC STATUS, 2
+    GOTO DISP_8
+
+    MOVF COUNT, W
+    XORLW 0x09
+    BTFSC STATUS, 2
+    GOTO DISP_9
+
+    RETURN
+
+DISP_0:
+    BANKSEL LATD
+    MOVLW 0b00111111
+    MOVWF LATD
+    RETURN
+
+DISP_1:
+    BANKSEL LATD
+    MOVLW 0b00000110
+    MOVWF LATD
+    RETURN
+
+DISP_2:
+    BANKSEL LATD
+    MOVLW 0b01011011
+    MOVWF LATD
+    RETURN
+
+DISP_3:
+    BANKSEL LATD
+    MOVLW 0b01001111
+    MOVWF LATD
+    RETURN
+
+DISP_4:
+    BANKSEL LATD
+    MOVLW 0b01100110
+    MOVWF LATD
+    RETURN
+
+DISP_5:
+    BANKSEL LATD
+    MOVLW 0b01101101
+    MOVWF LATD
+    RETURN
+
+DISP_6:
+    BANKSEL LATD
+    MOVLW 0b01111101
+    MOVWF LATD
+    RETURN
+
+DISP_7:
+    BANKSEL LATD
+    MOVLW 0b00000111
+    MOVWF LATD
+    RETURN
+
+DISP_8:
+    BANKSEL LATD
+    MOVLW 0b01111111
+    MOVWF LATD
+    RETURN
+
+DISP_9:
+    BANKSEL LATD
+    MOVLW 0b01101111
+    MOVWF LATD
+    RETURN
+
+COUNT_UP:
+    BANKSEL COUNT
+    INCF COUNT, F   ;COUNT++
+
+    ;wrap if >9 
+    MOVLW 10
+    CPFSLT COUNT    ;Skip if COUNT < 10
+    CLRF COUNT	    ;If >10 clear COUNT
+    CALL DISPLAY_COUNT	;Update display
+    RETURN
+    
+COUNT_DOWN:
+    BANKSEL COUNT
+    MOVF COUNT, F	;update STATUS & check if COUNT is already 0
+    BTFSC STATUS, 2	; if COUNT = 0, Z=1; skip if z=0
+    GOTO SET_NINE
+
+    DECF COUNT, F
+    CALL DISPLAY_COUNT
+    RETURN
+
+SET_NINE:
+    MOVLW 9
+    BANKSEL COUNT
+    MOVWF COUNT
+    CALL DISPLAY_COUNT
+    RETURN
+    
+RESET_COUNT:
+    BANKSEL COUNT
+    CLRF COUNT		;Clear COUNT
+    CALL DISPLAY_COUNT
+    RETURN
+
+DO_NOTHING:
+    CALL DISPLAY_COUNT	;Redisplay
+    RETURN
+    
+DELAY:
+    MOVLW Inner_loop
+    MOVWF REG10
+    MOVLW Middle_loop
+    MOVWF REG11
+    MOVLW Outer_loop
+    MOVWF REG12
+
+    LOOP1:
+	DECF REG10, F
+	BNZ LOOP1
+	MOVLW Inner_loop
+	MOVWF REG10
+
+	DECF REG11, F
+	BNZ LOOP1
+	MOVLW Middle_loop
+	MOVWF REG11
+
+	DECF REG12, F
+	BNZ LOOP1
+	RETURN
+	
+END
