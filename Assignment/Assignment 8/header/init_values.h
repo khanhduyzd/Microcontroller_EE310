@@ -3,47 +3,29 @@
 
 #include <xc.h>
 
-#define _XTAL_FREQ 1000000
+#define _XTAL_FREQ 1000000UL
 
-// ==========================
-// USER SETTINGS
-// ==========================
-
-// Secret code digits
+// Secret code
 #define SECRET_DIGIT1  2
 #define SECRET_DIGIT2  3
 
-// Assignment says input values will not exceed 3
-#define MAX_INPUT_DIGIT 3
+// values do not exceed 4
+#define MAX_INPUT_DIGIT         4
 
 // Timing
 #define SENSOR_DEBOUNCE_MS      250
-#define DIGIT_DONE_TIMEOUT_MS   1500
-#define MOTOR_ON_TIME_MS        4000
-#define WRONG_CODE_BUZZ_MS      2000
+#define DIGIT_DONE_TIMEOUT_MS   1300
+#define MOTOR_ON_TIME_MS        2000
+#define WRONG_CODE_BUZZ_MS      3000
 
-// ==========================
-// SIGNAL POLARITY
-// Change these if your hardware is opposite
-// ==========================
-
-// Photoresistor active when covered -> LOW
-#define PR_ACTIVE_LEVEL 0
-
-// Relay module polarity
-// 0 = active LOW relay module
-// 1 = active HIGH relay module
-#define RELAY_ACTIVE_LEVEL 0
-
-// Buzzer polarity
-#define BUZZER_ACTIVE_LEVEL 1
-
-// LED polarity
-#define LED_ACTIVE_LEVEL 1
+// Logic polarity
+// Change only if your hardware behaves opposite
+#define PR_ACTIVE_LEVEL         0   // covered/dark = LOW
+#define RELAY_ACTIVE_LEVEL      1   // RD7 HIGH turns relay ON
+#define BUZZER_ACTIVE_LEVEL     1   // RC2 HIGH turns buzzer ON
+#define LED_ACTIVE_LEVEL        1   // RE1 HIGH turns LED ON
 
 // 7-segment type
-// 0 = common cathode
-// 1 = common anode
-#define SEVEN_SEG_COMMON_ANODE 0
+#define SEVEN_SEG_COMMON_ANODE  0   // 0 = common cathode
 
 #endif
