@@ -1,1 +1,323 @@
+/*
+ * Assignment 9 - LCD + Accelerometer + IOC Interrupt
+ * PIC18F47K42 / PIC18F46K42
+ *
+ * LCD:
+ * D0-D7 -> RB0-RB7
+ * RS    -> RD0
+ * EN    -> RD1
+ * R/W   -> GND
+ *
+ * Accelerometer:
+ * XOUT  -> RA1 / ANA1
+ *
+ * Interrupt button:
+ * RC1 / IOCC1 -> push button -> GND
+ *
+ * Red LED:
+ * RC0 -> resistor -> LED -> GND
+ */
 
+// CONFIG1L
+#pragma config FEXTOSC = LP        // Use low-power external oscillator setting
+#pragma config RSTOSC = EXTOSC     // Use external oscillator as the reset/default clock source
+
+// CONFIG1H
+#pragma config CLKOUTEN = OFF      // Disable clock output pin
+#pragma config PR1WAY = ON         // PRLOCK can be changed only once
+#pragma config CSWEN = ON          // Allow clock switching
+#pragma config FCMEN = ON          // Enable fail-safe clock monitor
+
+// CONFIG2L
+#pragma config MCLRE = EXTMCLR     // Enable external MCLR reset pin
+#pragma config PWRTS = PWRT_OFF    // Disable power-up timer
+#pragma config MVECEN = OFF        // Disable multi-vector interrupts so simple ISR works
+#pragma config IVT1WAY = ON        // Interrupt vector table lock can be changed once
+#pragma config LPBOREN = OFF       // Disable low-power brown-out reset
+#pragma config BOREN = SBORDIS     // Enable brown-out reset; software control ignored
+
+// CONFIG2H
+#pragma config BORV = VBOR_2P45    // Brown-out reset voltage set to 2.45V
+#pragma config ZCD = OFF           // Disable zero-cross detect module
+#pragma config PPS1WAY = ON        // PPS registers can be unlocked/locked once
+#pragma config STVREN = ON         // Reset if stack overflow/underflow happens
+#pragma config DEBUG = OFF         // Disable debugger mode
+#pragma config XINST = OFF         // Disable extended instruction set
+
+// CONFIG3L
+#pragma config WDTCPS = WDTCPS_31  // Watchdog timer postscaler setting
+#pragma config WDTE = OFF          // Disable watchdog timer
+
+// CONFIG3H
+#pragma config WDTCWS = WDTCWS_7   // Watchdog window always open
+#pragma config WDTCCS = SC         // Watchdog clock source controlled by software
+
+// CONFIG4L
+#pragma config BBSIZE = BBSIZE_512 // Boot block size is 512 words
+#pragma config BBEN = OFF          // Disable boot block
+#pragma config SAFEN = OFF         // Disable storage area flash
+#pragma config WRTAPP = OFF        // Application flash is not write-protected
+
+// CONFIG4H
+#pragma config WRTB = OFF          // Boot block is not write-protected
+#pragma config WRTC = OFF          // Configuration registers are not write-protected
+#pragma config WRTD = OFF          // EEPROM is not write-protected
+#pragma config WRTSAF = OFF        // Storage area flash is not write-protected
+#pragma config LVP = ON            // Enable low-voltage programming
+
+// CONFIG5L
+#pragma config CP = OFF            // Disable code protection
+
+#include <xc.h>                    // Include PIC register definitions
+#include <stdio.h>                 // Include sprintf function
+#include <string.h>                // Include string functions
+#include <stdlib.h>                // Include standard library functions
+
+#define _XTAL_FREQ 4000000         // Tell compiler the oscillator frequency is 4 MHz
+#define FCY _XTAL_FREQ/4           // Define instruction cycle frequency
+
+#define Vref 5.0                   // ADC reference voltage; use measured PIC VDD if not exactly 5V
+int digital;                       // Store ADC digital result, 0 to 4095
+float voltage;                     // Store ADC voltage value
+char data[17];                     // Store LCD text; 16 characters plus null terminator
+
+#define ZERO_G      1.65           // Accelerometer flat/no-tilt voltage; change to your measured flat value
+#define SENSITIVITY 0.330          // Accelerometer sensitivity: 330 mV/g = 0.330 V/g
+#define TILT_DELTA  0.10           // Voltage difference needed to detect tilt
+#define SHAKE_DELTA 0.20           // Voltage swing needed to detect shake
+
+#define RS LATD0                   // LCD RS pin is connected to RD0
+#define EN LATD1                   // LCD EN pin is connected to RD1
+#define ldata LATB                 // LCD data bus D0-D7 is connected to PORTB
+#define LCD_Port TRISB             // LCD data direction register is TRISB
+#define LCD_Control TRISD          // LCD control direction register is TRISD
+
+volatile unsigned char haltRequest = 0; // Flag set by interrupt when button is pressed
+
+void ADC_Init(void);                // Function prototype for ADC initialization
+void LCD_Init(void);                // Function prototype for LCD initialization
+void LCD_Command(char cmd);         // Function prototype to send command to LCD
+void LCD_Char(char dat);            // Function prototype to send one character to LCD
+void LCD_String(const char *msg);   // Function prototype to send string to LCD
+void LCD_String_xy(char row, char pos, const char *msg); // Function prototype to print at row/column
+void MSdelay(unsigned int val);     // Function prototype for millisecond delay
+void Interrupt_Init(void);          // Function prototype for interrupt setup
+void Halt_10s(void);                // Function prototype for 10-second halt function
+
+void main(void)                     // Main program starts here
+{
+    float sumVoltage, avgVoltage;   // Variables for averaging accelerometer voltage
+    float minVoltage, maxVoltage;   // Variables to find minimum and maximum voltage
+    float diffVoltage;              // Difference between max and min voltage
+    float accel_g, accel_ms2;       // Acceleration in g and m/s^2
+    int i;                          // Loop counter
+
+    ANSELB = 0x00;                  // Make all PORTB pins digital for LCD data
+    ANSELD = 0x00;                  // Make all PORTD pins digital for LCD control
+
+    LATB = 0x00;                    // Clear PORTB output latch
+    LATD = 0x00;                    // Clear PORTD output latch
+
+    LCD_Init();                     // Initialize LCD
+    ADC_Init();                     // Initialize ADC
+    Interrupt_Init();               // Initialize interrupt button and red LED
+
+    while(1)                        // Run forever
+    {
+        if(haltRequest)             // Check if interrupt button was pressed
+        {
+            Halt_10s();             // Stop ADC reading and blink LED for 10 seconds
+        }
+
+        sumVoltage = 0.0;           // Reset voltage sum before sampling
+        minVoltage = 5.0;           // Start min voltage high
+        maxVoltage = 0.0;           // Start max voltage low
+
+        for(i = 0; i < 60; i++)     // Take 60 ADC samples
+        {
+            ADCON0bits.GO = 1;      // Start ADC conversion
+            while(ADCON0bits.GO);   // Wait until ADC conversion finishes
+
+            digital = (ADRESH * 256) | ADRESL; // Combine ADRESH and ADRESL into one 12-bit result
+            voltage = digital * ((float)Vref / 4096.0); // Convert ADC value to voltage
+
+            sumVoltage += voltage;  // Add voltage to sum for averaging
+
+            if(voltage < minVoltage) // Check if this voltage is the new minimum
+                minVoltage = voltage; // Save new minimum voltage
+
+            if(voltage > maxVoltage) // Check if this voltage is the new maximum
+                maxVoltage = voltage; // Save new maximum voltage
+
+            __delay_ms(2);          // Small delay between samples
+        }
+
+        avgVoltage = sumVoltage / 60.0; // Calculate average voltage
+        diffVoltage = maxVoltage - minVoltage; // Calculate voltage swing for shake detection
+
+        accel_g = (avgVoltage - ZERO_G) / SENSITIVITY; // Convert voltage difference to acceleration in g
+        accel_ms2 = accel_g * 9.81; // Convert acceleration from g to m/s^2
+
+        if(diffVoltage > SHAKE_DELTA) // If voltage changes a lot, sensor is shaking
+            LCD_String_xy(1, 0, "Shake           "); // Display Shake on line 1
+        else if((avgVoltage > ZERO_G - TILT_DELTA) && (avgVoltage < ZERO_G + TILT_DELTA)) // Check flat range
+            LCD_String_xy(1, 0, "Flat            "); // Display Flat on line 1
+        else if(avgVoltage > ZERO_G + TILT_DELTA) // Higher voltage means tilt left for your sensor
+            LCD_String_xy(1, 0, "Tilt_Left       "); // Display Tilt_Left on line 1
+        else                              // Otherwise voltage is lower than flat range
+            LCD_String_xy(1, 0, "Tilt_Right      "); // Display Tilt_Right on line 1
+
+        sprintf(data, "%+7.4f", accel_ms2); // Convert acceleration number to text with sign and 4 decimals
+        LCD_String_xy(2, 0, data);          // Print acceleration value on line 2
+        LCD_String(" X m/s2");              // Print unit after acceleration value
+
+        MSdelay(400);                       // Delay before next LCD update
+    }
+}
+
+void ADC_Init(void)                         // ADC setup function
+{
+    ADCON0bits.FM = 1;                      // Right-justify ADC result
+    ADCON0bits.CS = 1;                      // Use internal ADCRC clock for ADC
+
+    TRISAbits.TRISA1 = 1;                   // Set RA1 as input
+    ANSELAbits.ANSELA1 = 1;                 // Set RA1 as analog input
+
+    ADPCH = 0x01;                           // Select ANA1/RA1 as ADC channel
+
+    ADCLK = 0x00;                           // ADC clock selection register setting
+    ADRESH = 0x00;                          // Clear ADC high result register
+    ADRESL = 0x00;                          // Clear ADC low result register
+
+    ADPREL = 0x00;                          // Clear ADC precharge low register
+    ADPREH = 0x00;                          // Clear ADC precharge high register
+
+    ADACQL = 0x20;                          // Set ADC acquisition time low byte
+    ADACQH = 0x00;                          // Set ADC acquisition time high byte
+
+    ADCON0bits.ON = 1;                      // Turn ADC on
+}
+
+void Interrupt_Init(void)                   // Interrupt setup function
+{
+    ANSELCbits.ANSELC0 = 0;                 // Make RC0 digital for LED
+    ANSELCbits.ANSELC1 = 0;                 // Make RC1 digital for button
+
+    TRISCbits.TRISC0 = 0;                   // Set RC0 as output for red LED
+    LATCbits.LATC0 = 0;                     // Turn red LED off at start
+
+    TRISCbits.TRISC1 = 1;                   // Set RC1 as input for button
+
+    WPUCbits.WPUC1 = 1;                     // Enable weak pull-up on RC1
+
+    IOCCPbits.IOCCP1 = 0;                   // Disable positive-edge interrupt on RC1
+    IOCCNbits.IOCCN1 = 1;                   // Enable negative-edge interrupt on RC1
+    IOCCFbits.IOCCF1 = 0;                   // Clear RC1 interrupt flag
+
+    PIE0bits.IOCIE = 1;                     // Enable interrupt-on-change module
+    INTCON0bits.GIE = 1;                    // Enable global interrupts
+}
+
+void __interrupt() ISR(void)                // Interrupt service routine
+{
+    if(IOCCFbits.IOCCF1)                    // Check if RC1 caused the interrupt
+    {
+        haltRequest = 1;                    // Tell main loop to enter halt mode
+        IOCCFbits.IOCCF1 = 0;               // Clear RC1 interrupt flag
+    }
+}
+
+void Halt_10s(void)                         // Function to halt ADC reading for 10 seconds
+{
+    unsigned char k;                        // Loop counter for LED blinking
+
+    PIE0bits.IOCIE = 0;                     // Disable IOC while already in halt mode
+    haltRequest = 0;                        // Clear halt request flag
+
+    for(k = 0; k < 40; k++)                 // Loop 40 times
+    {
+        LATCbits.LATC0 = !LATCbits.LATC0;   // Toggle red LED
+        MSdelay(250);                       // Wait 250 ms; 40 times = 10 seconds
+    }
+
+    LATCbits.LATC0 = 0;                     // Turn LED off after halt
+    IOCCFbits.IOCCF1 = 0;                   // Clear button interrupt flag again
+    PIE0bits.IOCIE = 1;                     // Re-enable IOC interrupt
+}
+
+void LCD_Init(void)                         // LCD initialization function
+{
+    LCD_Port = 0x00;                        // Set PORTB as output for LCD data
+    LCD_Control = 0x00;                     // Set PORTD as output for LCD control
+
+    LATB = 0x00;                            // Clear LCD data port
+    LATD = 0x00;                            // Clear LCD control port
+
+    MSdelay(30);                            // Wait for LCD power-up
+
+    LCD_Command(0x38);                      // Set LCD to 8-bit, 2-line mode
+    MSdelay(5);                             // Wait after command
+
+    LCD_Command(0x38);                      // Repeat function set for reliable initialization
+    MSdelay(5);                             // Wait after command
+
+    LCD_Command(0x38);                      // Repeat function set again
+    MSdelay(5);                             // Wait after command
+
+    LCD_Command(0x0C);                      // Display ON, cursor OFF
+    MSdelay(5);                             // Wait after command
+
+    LCD_Command(0x06);                      // Entry mode: cursor moves right
+    MSdelay(5);                             // Wait after command
+
+    LCD_Command(0x01);                      // Clear LCD screen
+    MSdelay(10);                            // Wait longer after clear command
+}
+
+void LCD_Command(char cmd)                  // Send command byte to LCD
+{
+    ldata = cmd;                            // Put command on LCD data pins
+    RS = 0;                                 // RS = 0 means command mode
+    EN = 1;                                 // Set enable high
+    NOP();                                  // Very short delay
+    EN = 0;                                 // Set enable low so LCD reads command
+    MSdelay(3);                             // Wait for LCD to process command
+}
+
+void LCD_Char(char dat)                     // Send one character to LCD
+{
+    ldata = dat;                            // Put character on LCD data pins
+    RS = 1;                                 // RS = 1 means data/character mode
+    EN = 1;                                 // Set enable high
+    NOP();                                  // Very short delay
+    EN = 0;                                 // Set enable low so LCD reads character
+    MSdelay(1);                             // Wait for LCD to process character
+}
+
+void LCD_String(const char *msg)            // Print a string on LCD
+{
+    while(*msg)                             // Continue until null character
+    {
+        LCD_Char(*msg++);                   // Print current character and move to next
+    }
+}
+
+void LCD_String_xy(char row, char pos, const char *msg) // Print string at row and column
+{
+    if(row <= 1)                            // Check if row is first row
+        LCD_Command(0x80 | (pos & 0x0F));   // Move cursor to row 1, selected position
+    else                                    // Otherwise use second row
+        LCD_Command(0xC0 | (pos & 0x0F));   // Move cursor to row 2, selected position
+
+    LCD_String(msg);                        // Print the string at that location
+}
+
+void MSdelay(unsigned int val)              // Simple software millisecond delay
+{
+    unsigned int i, j;                      // Loop counters
+
+    for(i = 0; i < val; i++)                // Outer loop controls number of milliseconds
+    {
+        for(j = 0; j < 165; j++);           // Inner loop creates approximate 1 ms delay
+    }
+}
