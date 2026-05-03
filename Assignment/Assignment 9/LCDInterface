@@ -1,22 +1,35 @@
-/*
- * Assignment 9 - LCD + Accelerometer + IOC Interrupt
- * PIC18F47K42 / PIC18F46K42
- *
- * LCD:
- * D0-D7 -> RB0-RB7
- * RS    -> RD0
- * EN    -> RD1
- * R/W   -> GND
- *
- * Accelerometer:
- * XOUT  -> RA1 / ANA1
- *
- * Interrupt button:
- * RC1 / IOCC1 -> push button -> GND
- *
- * Red LED:
- * RC0 -> resistor -> LED -> GND
- */
+//---------------------------------
+// Title: Interfacing with Sensors
+//---------------------------------
+// Author: Duy Pham
+// Date: May 1, 2026
+// Versions: 3
+//   V1: LCD + ADC voltage display using potentiometer
+//   V2: Added microphone sensor with sound level classification
+//   V3: Added IOC interrupt to halt system for 10 seconds with LED indication
+// -----------------------------------------------------------
+// Setup:   PIC18F47K42 Curiosity Board
+// Compiler: xc8, V6.30
+// File Dependencies / Libraries: 
+//       Config.h, xc8.h
+// ------------------------------------------------------------
+// Purpose:
+//   Interface a accelerometer sensor with the PIC18F47K42 using the ADC,
+//   classify position levels (Flat, Tilt_Left, Tilt_Right, Shake), and display
+//   results on an LCD. Implement an Interrupt-On-Change (IOC) button that
+//   halts ADC operation for 10 seconds while a red LED blinks.
+//---------------------------------------------------------------
+// Inputs:
+//   RA0 (AN0): Microphone analog signal
+//   RA1 (AN1): Potentiometer (optional/previous stage)
+//   RC2: Push button (IOC interrupt trigger)
+// -----------------------------------------------------------
+// Outputs:
+//   PORTB: LCD data lines (D0-D7)
+//   RD0: LCD RS (Register Select)
+//   RD1: LCD EN (Enable)
+//   RC3: Red LED (blinks during interrupt halt state)
+
 
 // CONFIG1L
 #pragma config FEXTOSC = LP        // Use low-power external oscillator setting
@@ -86,12 +99,13 @@ char data[17];                     // Store LCD text; 16 characters plus null te
 #define TILT_DELTA  0.10           // Voltage difference needed to detect tilt
 #define SHAKE_DELTA 0.20           // Voltage swing needed to detect shake
 
-#define RS LATD0                   // LCD RS pin is connected to RD0
-#define EN LATD1                   // LCD EN pin is connected to RD1
+#define RS LATDbits.LATD0                   // LCD RS pin is connected to RD0
+#define EN LATDbits.LATD1                   // LCD EN pin is connected to RD1
 #define ldata LATB                 // LCD data bus D0-D7 is connected to PORTB
 #define LCD_Port TRISB             // LCD data direction register is TRISB
 #define LCD_Control TRISD          // LCD control direction register is TRISD
-
+#define RED_LED LATCbits.LATC3
+#define RED_LED_TRIS TRISCbits.TRISC3
 volatile unsigned char haltRequest = 0; // Flag set by interrupt when button is pressed
 
 void ADC_Init(void);                // Function prototype for ADC initialization
@@ -200,51 +214,87 @@ void ADC_Init(void)                         // ADC setup function
 
 void Interrupt_Init(void)                   // Interrupt setup function
 {
-    ANSELCbits.ANSELC0 = 0;                 // Make RC0 digital for LED
-    ANSELCbits.ANSELC1 = 0;                 // Make RC1 digital for button
+    INTCON0bits.GIE = 0;
 
-    TRISCbits.TRISC0 = 0;                   // Set RC0 as output for red LED
-    LATCbits.LATC0 = 0;                     // Turn red LED off at start
+    // RC3 = red LED output
+    TRISCbits.TRISC3 = 0;
+    LATCbits.LATC3 = 0;
+    ODCONCbits.ODCC3 = 0;
+    ANSELCbits.ANSELC3 = 0;
 
-    TRISCbits.TRISC1 = 1;                   // Set RC1 as input for button
+    // RC2 = interrupt button input
+    TRISCbits.TRISC2 = 1;
+    ANSELCbits.ANSELC2 = 0;
+    WPUCbits.WPUC2 = 1;
+    INLVLCbits.INLVLC2 = 1;
+    SLRCONCbits.SLRC2 = 0;
+    ODCONCbits.ODCC2 = 0;
 
-    WPUCbits.WPUC1 = 1;                     // Enable weak pull-up on RC1
+    // Interrupt Vector Table base
+    IVTBASEU = 0x00;
+    IVTBASEH = 0x60;
+    IVTBASEL = 0x08;
 
-    IOCCPbits.IOCCP1 = 0;                   // Disable positive-edge interrupt on RC1
-    IOCCNbits.IOCCN1 = 1;                   // Enable negative-edge interrupt on RC1
-    IOCCFbits.IOCCF1 = 0;                   // Clear RC1 interrupt flag
+    // Disable IOC while configuring
+    PIE0bits.IOCIE = 0;
 
-    PIE0bits.IOCIE = 1;                     // Enable interrupt-on-change module
-    INTCON0bits.GIE = 1;                    // Enable global interrupts
+    // Clear existing flag
+    IOCCFbits.IOCCF2 = 0;
+
+    // Button press/release detection
+    IOCCPbits.IOCCP2 = 0;
+    IOCCNbits.IOCCN2 = 1;
+
+    // Enable IOC
+    PIE0bits.IOCIE = 1;
+
+    // Enable priority + global interrupts
+    INTCON0bits.IPEN = 1;
+    INTCON0bits.GIEH = 1;
+    INTCON0bits.GIEL = 1;
+    INTCON0bits.GIE = 1;
 }
 
-void __interrupt() ISR(void)                // Interrupt service routine
-{
-    if(IOCCFbits.IOCCF1)                    // Check if RC1 caused the interrupt
-    {
-        haltRequest = 1;                    // Tell main loop to enter halt mode
-        IOCCFbits.IOCCF1 = 0;               // Clear RC1 interrupt flag
+void Halt_10s(void) {
+    unsigned char i;
+    unsigned char dummy;
+
+    PIE0bits.IOCIE = 0; // Disable IOC during halt
+    haltRequest = 0;
+
+    LCD_Clear();
+    LCD_String_xy(1, 0, "SYSTEM HALTED");
+    LCD_String_xy(2, 0, "ADC stopped");
+
+    for (i = 0; i < 20; i++) {
+        RED_LED = 1;
+        __delay_ms(250);
+
+        RED_LED = 0;
+        __delay_ms(250);
+    }
+ dummy = PORTC;
+    (void) dummy;
+
+    IOCCFbits.IOCCF2 = 0; // Clear button flag
+    PIE0bits.IOCIE = 1; // Re-enable IOC
+
+    RED_LED = 0;
+    LCD_Clear();
+}
+
+void __interrupt(irq(default), base(0x6008)) ISR(void) {
+    if (PIR0bits.IOCIF) {
+        if (IOCCFbits.IOCCF2) {
+            haltRequest = 1;
+
+            RED_LED = 1; // immediate feedback
+            PIE0bits.IOCIE = 0; // prevent repeated triggers
+
+            IOCCFbits.IOCCF2 = 0;
+        }
     }
 }
-
-void Halt_10s(void)                         // Function to halt ADC reading for 10 seconds
-{
-    unsigned char k;                        // Loop counter for LED blinking
-
-    PIE0bits.IOCIE = 0;                     // Disable IOC while already in halt mode
-    haltRequest = 0;                        // Clear halt request flag
-
-    for(k = 0; k < 40; k++)                 // Loop 40 times
-    {
-        LATCbits.LATC0 = !LATCbits.LATC0;   // Toggle red LED
-        MSdelay(250);                       // Wait 250 ms; 40 times = 10 seconds
-    }
-
-    LATCbits.LATC0 = 0;                     // Turn LED off after halt
-    IOCCFbits.IOCCF1 = 0;                   // Clear button interrupt flag again
-    PIE0bits.IOCIE = 1;                     // Re-enable IOC interrupt
-}
-
 void LCD_Init(void)                         // LCD initialization function
 {
     LCD_Port = 0x00;                        // Set PORTB as output for LCD data
@@ -283,7 +333,10 @@ void LCD_Command(char cmd)                  // Send command byte to LCD
     EN = 0;                                 // Set enable low so LCD reads command
     MSdelay(3);                             // Wait for LCD to process command
 }
-
+void LCD_Clear(void)
+{
+    LCD_Command(0x01);
+}
 void LCD_Char(char dat)                     // Send one character to LCD
 {
     ldata = dat;                            // Put character on LCD data pins
