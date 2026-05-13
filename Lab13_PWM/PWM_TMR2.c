@@ -34,7 +34,7 @@
 #define FCY    _XTAL_FREQ/4     // system clock is 1 usec
 
 #define myLED  PORTBbits.RB0
-#define PWM2_INITIALIZE_DUTY_VALUE 400
+#define PWM2_INITIALIZE_DUTY_VALUE 400 // edit duty cycle value
 
 uint16_t checkdutyCycle;
 char preScale;
