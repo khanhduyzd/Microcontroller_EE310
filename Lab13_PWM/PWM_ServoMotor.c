@@ -168,7 +168,7 @@ void main(void)
         {
             // Do not change servoDuty.
             // PWM continues running, so servo holds position.
-            __delay_ms(3500);
+            __delay_ms(5000);
         }
     }
 }
