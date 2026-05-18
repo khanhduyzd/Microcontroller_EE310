@@ -117,8 +117,6 @@ void TrialLED_Init(void);
 void UpdateTrialLEDs(void);
 
 void Buzzer_Init(void);
-void Buzzer_On(void);
-void Buzzer_Off(void);
 void Buzzer_Beep_ms(uint16_t ms);
 void Buzzer_ResetSound(void);
 void Buzzer_WrongSound(void);
