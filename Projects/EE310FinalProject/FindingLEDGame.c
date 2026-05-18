@@ -60,9 +60,9 @@
 // For Vref = 5V and accelerometer zero-g voltage around 1.65V:
 // ADC = (1.65 / 5.0) * 4096 = about 1352
 #define FIXED_CENTER_ADC       1352U
-#define TILT_DELTA_COUNTS      82U
-#define SHAKE_DELTA_COUNTS     287U
-#define SAMPLE_COUNT           32U
+#define TILT_DELTA_COUNTS      60U
+#define SHAKE_DELTA_COUNTS     250U
+#define SAMPLE_COUNT           26U
 #define MOVE_DELAY_MS         350U
 #define BUZZER LATCbits.LATC2
 #define INVERT_DIRECTION       1 // Change to 1 if left/right direction is backwards
@@ -104,14 +104,13 @@ volatile uint8_t state = 0;
 
 void ADC_Init(void);
 uint16_t ADC_Read(void);
+uint8_t i;
 
 void LED_Init(void);
-void LED_Write(uint8_t pattern);
 void LED_ResetCenter(void);
 void LED_ShowPosition(uint8_t position);
 void LED_MoveLeft(void);
 void LED_MoveRight(void);
-void LED_FlashPattern(uint8_t pattern, uint8_t times);
 
 void TrialLED_Init(void);
 void UpdateTrialLEDs(void);
@@ -119,9 +118,6 @@ void UpdateTrialLEDs(void);
 void Buzzer_Init(void);
 void Buzzer_Beep_ms(uint16_t ms);
 void Buzzer_ResetSound(void);
-void Buzzer_WrongSound(void);
-void Buzzer_WinSound(void);
-void Buzzer_GameOverSound(void);
 
 void Button_Init(void);
 void Button_WaitRelease(void);
@@ -140,14 +136,12 @@ void Delay_ms(uint16_t ms);
 void main(void)
 {
     uint32_t sum;
-    uint8_t i;
-
+    
     ADC_Init();
     LED_Init();
     TrialLED_Init();
     Buzzer_Init();
     Button_Init();
-
     StartNewGame();
 
     while(1)
@@ -229,9 +223,7 @@ void main(void)
     else if(tilt_adc < -(int16_t)TILT_DELTA_COUNTS)
     {
         state = 1;
-
         LED_MoveLeft();
-
         Delay_ms(MOVE_DELAY_MS);
     }
 
@@ -239,9 +231,7 @@ void main(void)
     else
     {
         state = 2;
-
         LED_MoveRight();
-
         Delay_ms(MOVE_DELAY_MS);
     }
 }
@@ -265,8 +255,11 @@ void StartNewGame(void)
     randomSeed += (uint8_t)ADRESL;
 
     secret_position = (uint8_t)((ADRESL ^ ADRESH ^ randomSeed ) & 0x07);
-
-    LED_FlashPattern(0xFF, 1);
+    
+    LATD = 0xFF;
+    Delay_ms (120);
+    LATD = 0x00;
+    Delay_ms (120);
     LED_ResetCenter();
 }
 
@@ -303,26 +296,52 @@ void CheckGuess(void)
 void WinAction(void)
 {
     gameFinished = 1;
-    LED_FlashPattern(0xFF, 4);
-    Buzzer_WinSound();
-    LED_ShowPosition(led_position); // Show winning selected LED
+    for(i = 0; i < 10; i++)
+    {
+        LATD = 0xFF;      
+        BUZZER = 1;       
+        Delay_ms(100);
+
+        LATD = 0x00;     
+        BUZZER = 0;      
+        Delay_ms(100);
+    }
+    LATD = 0xFF;
+    BUZZER = 1;
+    Delay_ms(1500);
+
+    BUZZER = 0;
+    Delay_ms(150);
 }
 
 void WrongAction(void)
 {
-    // Blink selected LED
-    LED_FlashPattern((uint8_t)(1 << led_position), 2);
-    Buzzer_WrongSound();
+    BUZZER = 1;
+    for(i = 0; i < 3; i++) // wrong led blink
+    {
+        LATD = 0x81;
+        Delay_ms(250);
+        LATD = 0x00;
+        Delay_ms(250);
+    }
+    BUZZER = 0;
     LED_ShowPosition(led_position);
-    
 }
 
 void GameOverAction(void)
-{
+{   
     gameFinished = 1;
-    // Game over LED pattern
-    LED_FlashPattern(0x81, 4);
-    Buzzer_GameOverSound();
+    BUZZER = 1;
+    for(i = 0; i < 5; i++) // wrong led blink
+    {
+        LATD = 0xAA;
+        Delay_ms(250);
+        LATD = 0x00;
+        LATD = 0x55;
+        Delay_ms(250);
+        LATD = 0x00;
+    }
+    BUZZER = 0;
     LED_ShowPosition(led_position);
 }
 
@@ -361,9 +380,7 @@ void ADC_Init(void)
 uint16_t ADC_Read(void)
 {
     ADCON0bits.GO = 1;
-
     while(ADCON0bits.GO);
-
     return ((uint16_t)ADRESH << 8) | ADRESL;
 }
 
@@ -375,15 +392,6 @@ void LED_Init(void)
     ANSELD = 0x00;      // PORTD digital
     TRISD = 0x00;       // PORTD output
     LATD = 0x00;
-}
-
-void LED_Write(uint8_t pattern)
-{
-#if LED_ACTIVE_LOW
-    LATD = (uint8_t)(~pattern);
-#else
-    LATD = pattern;
-#endif
 }
 
 void LED_ResetCenter(void)
@@ -398,7 +406,7 @@ void LED_ShowPosition(uint8_t position)
     {
         position = 7;
     }
-    LED_Write((uint8_t)(1 << position));
+    LATD = (uint8_t)(1 << position);
 }
 
 void LED_MoveLeft(void)
@@ -419,22 +427,8 @@ void LED_MoveRight(void)
     LED_ShowPosition(led_position);
 }
 
-void LED_FlashPattern(uint8_t pattern, uint8_t times)
-{
-    uint8_t i;
-    for(i = 0; i < times; i++)
-    {
-        LED_Write(pattern);
-        Delay_ms(150);
-
-        LED_Write(0x00);
-        Delay_ms(150);
-    }
-}
-
 // TRIAL LED FUNCTIONS: RC4, RC5, RC6
 // =====================================================
-
 void TrialLED_Init(void)
 {
     ANSELCbits.ANSELC4 = 0;
@@ -460,7 +454,6 @@ void UpdateTrialLEDs(void)
 
 // ACTIVE BUZZER FUNCTIONS: RC2
 // =====================================================
-
 void Buzzer_Init(void)
 {
     ANSELCbits.ANSELC2 = 0;   // RC2 digital
@@ -482,36 +475,8 @@ void Buzzer_ResetSound(void)
     Buzzer_Beep_ms(120);
 }
 
-void Buzzer_WrongSound(void)
-{
-    Buzzer_Beep_ms(150);
-    Delay_ms(100);
-    Buzzer_Beep_ms(150);
-}
-
-void Buzzer_WinSound(void)
-{
-    Buzzer_Beep_ms(250);
-    Delay_ms(120);
-    Buzzer_Beep_ms(250);
-    Delay_ms(120);
-    Buzzer_Beep_ms(500);
-}
-
-void Buzzer_GameOverSound(void)
-{
-    Buzzer_Beep_ms(150);
-    Delay_ms(100);
-    Buzzer_Beep_ms(150);
-    Delay_ms(100);
-    Buzzer_Beep_ms(150);
-    Delay_ms(100);
-    Buzzer_Beep_ms(500);
-}
-
 // CONFIRM BUTTON FUNCTIONS: RB3
 // =====================================================
-
 void Button_Init(void)
 {
     ANSELBbits.ANSELB3 = 0; // RB3 = confirm button input
@@ -544,7 +509,6 @@ void Button_WaitRelease(void)
 
 // DELAY FUNCTION
 // =====================================================
-
 void Delay_ms(uint16_t ms)
 {
     while(ms > 0)
@@ -555,9 +519,8 @@ void Delay_ms(uint16_t ms)
 }
 
 // INTERRUPT SERVICE ROUTINE
-// Use this style if your config has MVECEN = OFF
+// Use this style if config has MVECEN = OFF
 // =====================================================
-
 void __interrupt() ISR(void)
 {
     // Button IOC interrupt
@@ -574,8 +537,3 @@ if(PIR0bits.IOCIF && PIE0bits.IOCIE)
     }
 }
 }
-
-
-
-   
-  
