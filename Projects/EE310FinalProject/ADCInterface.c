@@ -53,45 +53,30 @@
 
 #define _XTAL_FREQ 4000000UL
 
+// USER SETTINGS
 // =====================================================
-// Hardware setup
+
+// Fixed flat ADC value.
+// For Vref = 5V and accelerometer zero-g voltage around 1.65V:
+// ADC = (1.65 / 5.0) * 4096 = about 1352
+#define FIXED_CENTER_ADC       1352U
+#define TILT_DELTA_COUNTS      82U
+#define SHAKE_DELTA_COUNTS     287U
+#define SAMPLE_COUNT           32U
+#define MOVE_DELAY_MS         350U
+#define BUZZER LATCbits.LATC2
+#define INVERT_DIRECTION       1 // Change to 1 if left/right direction is backwards
+#define LED_ACTIVE_LOW         0 // Change to 1 if your LED bar turns ON with logic LOW
+#define TRIAL_LED1  LATCbits.LATC4
+#define TRIAL_LED2  LATCbits.LATC5
+#define TRIAL_LED3  LATCbits.LATC6
+
+// VARIABLES
 // =====================================================
-// Accelerometer analog output connected to RA1 / ANA1
-// LED bar connected to RD0-RD7
 
-// =====================================================
-// ADC / motion settings based on Vref = 5V
-// =====================================================
-// 12-bit ADC range: 0 to 4095
-// 0.10V = 0.10 / 5.0 * 4096 = about 82 counts
-// 0.35V = 0.35 / 5.0 * 4096 = about 287 counts
-
-#define TILT_DELTA_COUNTS    82U
-#define SHAKE_DELTA_COUNTS   287U
-
-#define SAMPLE_COUNT         32U
-#define MOVE_DELAY_MS        25U
-
-// Change this to 1 if left/right direction is backwards
-#define INVERT_DIRECTION     1
-
-// Change this to 1 if your LED bar is active-low
-#define LED_ACTIVE_LOW       0
-
-// If 1, the system measures flat position at startup
-#define AUTO_CALIBRATE       1
-
-// If AUTO_CALIBRATE = 0, use this fixed flat value.
-// For ZERO_G = 1.65V and Vref = 5V:
-// 1.65 / 5.0 * 4096 = about 1352
-#define FIXED_CENTER_ADC     1352U
-
-// =====================================================
-// Global variables
-// =====================================================
+volatile uint8_t confirmRequest = 0;
 
 volatile uint16_t adc_value = 0;
-volatile uint16_t adc_center = 0;
 volatile uint16_t avg_adc = 0;
 volatile uint16_t min_adc = 0;
 volatile uint16_t max_adc = 0;
@@ -99,21 +84,26 @@ volatile uint16_t swing_adc = 0;
 volatile int16_t tilt_adc = 0;
 
 volatile uint8_t led_position = 3;
+volatile uint8_t secret_position = 0;
+volatile uint8_t attempts_left = 3;
+volatile uint8_t gameFinished = 0;
+volatile uint8_t randomSeed = 0;
 
-// state:
+// state values for debugging in MPLAB Watch
 // 0 = flat
 // 1 = tilt left
 // 2 = tilt right
 // 3 = shake reset
+// 4 = correct
+// 5 = wrong
+// 6 = game over
 volatile uint8_t state = 0;
 
-// =====================================================
-// Function prototypes
+// FUNCTION PROTOTYPES
 // =====================================================
 
 void ADC_Init(void);
 uint16_t ADC_Read(void);
-uint16_t ADC_Average(void);
 
 void LED_Init(void);
 void LED_Write(uint8_t pattern);
@@ -121,9 +111,32 @@ void LED_ResetCenter(void);
 void LED_ShowPosition(uint8_t position);
 void LED_MoveLeft(void);
 void LED_MoveRight(void);
+void LED_FlashPattern(uint8_t pattern, uint8_t times);
 
-// =====================================================
-// Main program
+void TrialLED_Init(void);
+void UpdateTrialLEDs(void);
+
+void Buzzer_Init(void);
+void Buzzer_On(void);
+void Buzzer_Off(void);
+void Buzzer_Beep_ms(uint16_t ms);
+void Buzzer_ResetSound(void);
+void Buzzer_WrongSound(void);
+void Buzzer_WinSound(void);
+void Buzzer_GameOverSound(void);
+
+void Button_Init(void);
+void Button_WaitRelease(void);
+
+void StartNewGame(void);
+void CheckGuess(void);
+void WinAction(void);
+void WrongAction(void);
+void GameOverAction(void);
+
+void Delay_ms(uint16_t ms);
+
+// MAIN PROGRAM
 // =====================================================
 
 void main(void)
@@ -133,109 +146,200 @@ void main(void)
 
     ADC_Init();
     LED_Init();
+    TrialLED_Init();
+    Buzzer_Init();
+    Button_Init();
 
-    // Start with center LEDs on
-    LED_ResetCenter();
-
-    // Wait for accelerometer to settle
-    __delay_ms(1000);
-
-#if AUTO_CALIBRATE
-    // Keep the accelerometer flat during startup.
-    // This measured value becomes the flat reference.
-    adc_center = ADC_Average();
-#else
-    adc_center = FIXED_CENTER_ADC;
-#endif
+    StartNewGame();
 
     while(1)
+{
+    if(confirmRequest) // Confirm button was pressed
     {
-        sum = 0;
-        min_adc = 4095;
-        max_adc = 0;
-
-        // Take multiple samples
-        for(i = 0; i < SAMPLE_COUNT; i++)
+        confirmRequest = 0;
+        Button_WaitRelease();
+        if(!gameFinished)
         {
-            adc_value = ADC_Read();
+            CheckGuess();
+        }
+    }
+    
+    sum = 0;
+    min_adc = 4095;
+    max_adc = 0;
+    
+    for(i = 0; i < SAMPLE_COUNT; i++) // Read accelerometer several times
+    {
+        adc_value = ADC_Read();
 
-            sum += adc_value;
+        sum += adc_value;
 
-            if(adc_value < min_adc)
-            {
-                min_adc = adc_value;
-            }
-
-            if(adc_value > max_adc)
-            {
-                max_adc = adc_value;
-            }
-
-            __delay_ms(2);
+        if(adc_value < min_adc)
+        {
+            min_adc = adc_value;
         }
 
-        avg_adc = (uint16_t)(sum / SAMPLE_COUNT);
-        swing_adc = max_adc - min_adc;
+        if(adc_value > max_adc)
+        {
+            max_adc = adc_value;
+        }
 
-        tilt_adc = (int16_t)avg_adc - (int16_t)adc_center;
+        __delay_ms(2);
+    }
+
+    avg_adc = (uint16_t)(sum / SAMPLE_COUNT);
+    swing_adc = max_adc - min_adc;
+
+    tilt_adc = (int16_t)avg_adc - (int16_t)FIXED_CENTER_ADC;
 
 #if INVERT_DIRECTION
-        tilt_adc = -tilt_adc;
+    tilt_adc = -tilt_adc;
 #endif
 
-        // =================================================
-        // Motion logic
-        // =================================================
+    // Improve random seed using ADC movement/noise
+    randomSeed ^= (uint8_t)adc_value;
+    randomSeed += (uint8_t)ADRESL;
 
-        // Shake reset
-        if(swing_adc > SHAKE_DELTA_COUNTS)
+    // Shake to reset at anytime
+    if(swing_adc > SHAKE_DELTA_COUNTS)
+    {
+        state = 3;
+        StartNewGame();
+        Buzzer_ResetSound();
+        Delay_ms(300);
+    }
+
+    // If game is finished, wait for shake reset
+    else if(gameFinished)
+    {
+        // Do nothing until shake is detected
+        Delay_ms(MOVE_DELAY_MS);
+    }
+
+    // Flat mode: LED stays where it is
+    else if((tilt_adc > -(int16_t)TILT_DELTA_COUNTS) &&
+            (tilt_adc <  (int16_t)TILT_DELTA_COUNTS))
+    {
+        state = 0;
+
+        // Do nothing.
+        // LED keeps current position.
+        Delay_ms(MOVE_DELAY_MS);
+    }
+
+    // Tilt left
+    else if(tilt_adc < -(int16_t)TILT_DELTA_COUNTS)
+    {
+        state = 1;
+
+        LED_MoveLeft();
+
+        Delay_ms(MOVE_DELAY_MS);
+    }
+
+    // Tilt right
+    else
+    {
+        state = 2;
+
+        LED_MoveRight();
+
+        Delay_ms(MOVE_DELAY_MS);
+    }
+}
+}
+
+// =====================================================
+// GAME FUNCTIONS
+// =====================================================
+
+void StartNewGame(void)
+{
+    gameFinished = 0;
+    attempts_left = 3;
+    state = 0;
+
+    UpdateTrialLEDs();
+    LED_ResetCenter();
+
+    adc_value = ADC_Read();
+    randomSeed ^= (uint8_t)adc_value;
+    randomSeed += (uint8_t)ADRESL;
+
+    secret_position = (uint8_t)((ADRESL ^ ADRESH ^ randomSeed ) & 0x07);
+
+    LED_FlashPattern(0xFF, 1);
+    LED_ResetCenter();
+}
+
+void CheckGuess(void)
+{
+    if(led_position == secret_position)
+    {
+        state = 4;
+        WinAction();
+    }
+    else
+    {
+        state = 5;
+
+        if(attempts_left > 0)
         {
-            state = 3;
-            LED_ResetCenter();
-            __delay_ms(400);
+            attempts_left--;
         }
 
-        // Flat: stop LED motion
-        else if((tilt_adc > -(int16_t)TILT_DELTA_COUNTS) &&
-                (tilt_adc <  (int16_t)TILT_DELTA_COUNTS))
+        UpdateTrialLEDs();
+
+        if(attempts_left == 0)
         {
-            state = 0;
-
-            // Do nothing here.
-            // LED stays where it is when flat.
-            __delay_ms(MOVE_DELAY_MS);
+            state = 6;
+            GameOverAction();
         }
-
-        // Tilt left
-        else if(tilt_adc < -(int16_t)TILT_DELTA_COUNTS)
-        {
-            state = 1;
-            LED_MoveLeft();
-            __delay_ms(MOVE_DELAY_MS);
-        }
-
-        // Tilt right
         else
         {
-            state = 2;
-            LED_MoveRight();
-            __delay_ms(MOVE_DELAY_MS);
+            WrongAction();
         }
     }
 }
 
-// =====================================================
-// ADC functions
+void WinAction(void)
+{
+    gameFinished = 1;
+    LED_FlashPattern(0xFF, 4);
+    Buzzer_WinSound();
+    LED_ShowPosition(led_position); // Show winning selected LED
+}
+
+void WrongAction(void)
+{
+    // Blink selected LED
+    LED_FlashPattern((uint8_t)(1 << led_position), 2);
+    Buzzer_WrongSound();
+    LED_ShowPosition(led_position);
+    
+}
+
+void GameOverAction(void)
+{
+    gameFinished = 1;
+    // Game over LED pattern
+    LED_FlashPattern(0x81, 4);
+    Buzzer_GameOverSound();
+    LED_ShowPosition(led_position);
+}
+
+
+// ADC FUNCTIONS
 // =====================================================
 
 void ADC_Init(void)
 {
-    // RA1 / ANA1 as analog input
+    // RA1 / ANA1 = accelerometer analog input
     TRISAbits.TRISA1 = 1;
     ANSELAbits.ANSELA1 = 1;
 
     ADCON0bits.FM = 1;      // Right justify ADC result
-    ADCON0bits.CS = 1;      // Use ADCRC clock
+    ADCON0bits.CS = 1;      // ADCRC clock
 
     ADPCH = 0x01;           // Select ANA1 / RA1
 
@@ -253,40 +357,25 @@ void ADC_Init(void)
     ADACQL = 0x20;
     ADACQH = 0x00;
 
-    ADCON0bits.ON = 1;      // Turn ADC on
+    ADCON0bits.ON = 1;      // ADC ON
 }
 
 uint16_t ADC_Read(void)
 {
-    ADCON0bits.GO = 1;          // Start ADC conversion
+    ADCON0bits.GO = 1;
 
-    while(ADCON0bits.GO);       // Wait until conversion is complete
+    while(ADCON0bits.GO);
 
     return ((uint16_t)ADRESH << 8) | ADRESL;
 }
 
-uint16_t ADC_Average(void)
-{
-    uint32_t sum = 0;
-    uint8_t i;
-
-    for(i = 0; i < SAMPLE_COUNT; i++)
-    {
-        sum += ADC_Read();
-        __delay_ms(5);
-    }
-
-    return (uint16_t)(sum / SAMPLE_COUNT);
-}
-
-// =====================================================
-// LED bar functions
+// LED BAR FUNCTIONS: RD0-RD7
 // =====================================================
 
 void LED_Init(void)
 {
     ANSELD = 0x00;      // PORTD digital
-    TRISD = 0x00;       // RD0-RD7 outputs
+    TRISD = 0x00;       // PORTD output
     LATD = 0x00;
 }
 
@@ -302,9 +391,7 @@ void LED_Write(uint8_t pattern)
 void LED_ResetCenter(void)
 {
     led_position = 3;
-
-    // Center LEDs ON: RD3 and RD4
-    LED_Write(0b00011000);
+    LED_ShowPosition(led_position);
 }
 
 void LED_ShowPosition(uint8_t position)
@@ -313,7 +400,6 @@ void LED_ShowPosition(uint8_t position)
     {
         position = 7;
     }
-
     LED_Write((uint8_t)(1 << position));
 }
 
@@ -323,7 +409,6 @@ void LED_MoveLeft(void)
     {
         led_position--;
     }
-
     LED_ShowPosition(led_position);
 }
 
@@ -333,6 +418,166 @@ void LED_MoveRight(void)
     {
         led_position++;
     }
-
     LED_ShowPosition(led_position);
 }
+
+void LED_FlashPattern(uint8_t pattern, uint8_t times)
+{
+    uint8_t i;
+    for(i = 0; i < times; i++)
+    {
+        LED_Write(pattern);
+        Delay_ms(150);
+
+        LED_Write(0x00);
+        Delay_ms(150);
+    }
+}
+
+// TRIAL LED FUNCTIONS: RC4, RC5, RC6
+// =====================================================
+
+void TrialLED_Init(void)
+{
+    ANSELCbits.ANSELC4 = 0;
+    ANSELCbits.ANSELC5 = 0;
+    ANSELCbits.ANSELC6 = 0;
+
+    TRISCbits.TRISC4 = 0;
+    TRISCbits.TRISC5 = 0;
+    TRISCbits.TRISC6 = 0;
+
+    TRIAL_LED1 = 0;
+    TRIAL_LED2 = 0;
+    TRIAL_LED3 = 0;
+}
+
+void UpdateTrialLEDs(void)
+{
+    TRIAL_LED1 = (attempts_left >= 1) ? 1 : 0;
+    TRIAL_LED2 = (attempts_left >= 2) ? 1 : 0;
+    TRIAL_LED3 = (attempts_left >= 3) ? 1 : 0;
+}
+
+
+// ACTIVE BUZZER FUNCTIONS: RC2
+// =====================================================
+
+void Buzzer_Init(void)
+{
+    ANSELCbits.ANSELC2 = 0;   // RC2 digital
+    TRISCbits.TRISC2 = 0;     // RC2 output
+    LATCbits.LATC2 = 0;       // buzzer off
+}
+
+void Buzzer_Beep_ms(uint16_t ms)
+{
+    BUZZER = 1;
+    Delay_ms(ms);
+    BUZZER = 0;
+}
+
+void Buzzer_ResetSound(void)
+{
+    Buzzer_Beep_ms(120);
+    Delay_ms(80);
+    Buzzer_Beep_ms(120);
+}
+
+void Buzzer_WrongSound(void)
+{
+    Buzzer_Beep_ms(150);
+    Delay_ms(100);
+    Buzzer_Beep_ms(150);
+}
+
+void Buzzer_WinSound(void)
+{
+    Buzzer_Beep_ms(250);
+    Delay_ms(120);
+    Buzzer_Beep_ms(250);
+    Delay_ms(120);
+    Buzzer_Beep_ms(500);
+}
+
+void Buzzer_GameOverSound(void)
+{
+    Buzzer_Beep_ms(150);
+    Delay_ms(100);
+    Buzzer_Beep_ms(150);
+    Delay_ms(100);
+    Buzzer_Beep_ms(150);
+    Delay_ms(100);
+    Buzzer_Beep_ms(500);
+}
+
+// CONFIRM BUTTON FUNCTIONS: RB3
+// =====================================================
+
+void Button_Init(void)
+{
+    ANSELBbits.ANSELB3 = 0; // RB3 = confirm button input
+    TRISBbits.TRISB3 = 1;
+   
+    WPUBbits.WPUB3 = 1; // Enable weak pull-up on RB3
+    
+    IOCBFbits.IOCBF3 = 0; // Clear IOC flag
+
+    IOCBPbits.IOCBP3 = 0; // Falling edge interrupt:
+    IOCBNbits.IOCBN3 = 1;
+
+    PIE0bits.IOCIE = 1; // Enable IOC interrupt
+    INTCON0bits.IPEN = 0;   // Disable interrupt priority for simple interrupt mode
+    INTCON0bits.GIE = 1;    // Enable global interrupts
+}
+
+void Button_WaitRelease(void)
+{
+    // Simple debounce and wait for release
+    Delay_ms(50);
+    while(PORTBbits.RB3 == 0)
+    {
+        // wait until button is released
+    }
+    Delay_ms(80);
+    IOCBFbits.IOCBF3 = 0; // Clear any bounce flag that happened during release
+    PIE0bits.IOCIE = 1; // Re-enable IOC after the button is fully released
+}
+
+// DELAY FUNCTION
+// =====================================================
+
+void Delay_ms(uint16_t ms)
+{
+    while(ms > 0)
+    {
+        __delay_ms(1);
+        ms--;
+    }
+}
+
+// INTERRUPT SERVICE ROUTINE
+// Use this style if your config has MVECEN = OFF
+// =====================================================
+
+void __interrupt() ISR(void)
+{
+    // Button IOC interrupt
+if(PIR0bits.IOCIF && PIE0bits.IOCIE)
+{
+    if(IOCBFbits.IOCBF3)
+    {
+        if(PORTBbits.RB3 == 0) // Confirm only if button is pressed low
+        {
+            confirmRequest = 1;
+            PIE0bits.IOCIE = 0; // Disable IOC until the main code handles this press
+        }
+        IOCBFbits.IOCBF3 = 0;
+    }
+}
+}
+
+
+
+   
+  
